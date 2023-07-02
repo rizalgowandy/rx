@@ -4,7 +4,6 @@ use crate::history::History;
 use crate::parser::*;
 use crate::platform;
 use crate::session::{Direction, Input, Mode, PanState, Tool, VisualState};
-use crate::view::layer::LayerId;
 
 use memoir::traits::Parse;
 use memoir::*;
@@ -80,8 +79,6 @@ pub enum Command {
     Pan(i32, i32),
     Zoom(Op),
 
-    // TODO: These operate on the active layer. We should have a command
-    // to set the active layer.
     PaintColor(Rgba8, i32, i32),
     PaintForeground(i32, i32),
     PaintBackground(i32, i32),
@@ -124,11 +121,6 @@ pub enum Command {
     ViewCenter,
     ViewNext,
     ViewPrev,
-
-    // Layers
-    LayerAdd,
-    LayerRemove(Option<LayerId>),
-    LayerExtend(Option<LayerId>),
 
     Noop,
 }
@@ -183,13 +175,9 @@ impl fmt::Display for Command {
             Self::Noop => write!(f, "No-op"),
             Self::PaletteAdd(c) => write!(f, "Add {color} to palette", color = c),
             Self::PaletteClear => write!(f, "Clear palette"),
-            Self::PaletteGradient(cs, ce, n) => write!(
-                f,
-                "Create {} colors gradient from {} to {}",
-                number = n,
-                colorstart = cs,
-                colorend = ce
-            ),
+            Self::PaletteGradient(cs, ce, n) => {
+                write!(f, "Create {n} colors gradient from {cs} to {ce}")
+            }
             Self::PaletteSample => write!(f, "Sample palette from view"),
             Self::PaletteSort => write!(f, "Sort palette colors"),
             Self::Pan(x, 0) if *x > 0 => write!(f, "Pan workspace right"),
@@ -443,7 +431,7 @@ impl From<Value> for f32 {
 impl From<Value> for f64 {
     fn from(other: Value) -> f64 {
         if let Value::F64(x) = other {
-            return x as f64;
+            return x;
         }
         panic!("expected {:?} to be a `f64`", other);
     }
@@ -966,9 +954,6 @@ impl Default for Commands {
                 ))
                 .map(|(_, (w, h))| Command::FrameResize(w, h))
             })
-            .command("l/add", "Add a new layer to the active view", |p| {
-                p.value(Command::LayerAdd)
-            })
             .command("tool", "Switch tool", |p| {
                 p.then(word().label("pan/brush/sampler/.."))
                     .try_map(|(_, t)| match t.as_str() {
@@ -1140,44 +1125,45 @@ mod test {
     fn test_command_completer() {
         let tmp = tempfile::tempdir().unwrap();
 
-        fs::create_dir(tmp.path().join("assets")).unwrap();
         for file_name in &["one.png", "two.png", "three.png"] {
             let path = tmp.path().join(file_name);
-            File::create(path).unwrap();
-        }
-        for file_name in &["four.png", "five.png", "six.png"] {
-            let path = tmp.path().join("assets").join(file_name);
             File::create(path).unwrap();
         }
 
         let cc = CommandCompleter::new(tmp.path(), &["png"]);
         let mut auto = Autocomplete::new(cc);
 
-        assert_eq!(auto.next(":e |", 3), Some(("three.png".to_owned(), 3..3)));
+        assert_eq!(auto.next(":e |", 3), Some(("one.png".to_owned(), 3..3)));
         auto.invalidate();
         assert_eq!(
             auto.next(":e |one.png", 3),
-            Some(("three.png".to_owned(), 3..3))
+            Some(("one.png".to_owned(), 3..3))
         );
 
         auto.invalidate();
         assert_eq!(
             auto.next(":e one.png | two.png", 11),
-            Some(("three.png".to_owned(), 11..11))
+            Some(("one.png".to_owned(), 11..11))
         );
         assert_eq!(
-            auto.next(":e one.png three.png| two.png", 20),
+            auto.next(":e one.png one.png| two.png", 20),
+            Some(("three.png".to_owned(), 11..18))
+        );
+        assert_eq!(
+            auto.next(":e one.png three.png| two.png", 18),
             Some(("two.png".to_owned(), 11..20))
         );
-        assert_eq!(
-            auto.next(":e one.png two.png| two.png", 18),
-            Some(("one.png".to_owned(), 11..18))
-        );
+
+        fs::create_dir(tmp.path().join("assets")).unwrap();
+        for file_name in &["four.png", "five.png", "six.png"] {
+            let path = tmp.path().join("assets").join(file_name);
+            File::create(path).unwrap();
+        }
 
         auto.invalidate();
         assert_eq!(
             auto.next(":e assets/|", 10),
-            Some(("six.png".to_owned(), 10..10))
+            Some(("five.png".to_owned(), 10..10))
         );
     }
 
@@ -1207,13 +1193,16 @@ mod test {
         cli.clear();
         cli.puts(":e ");
         cli.completion_next();
+        assert_eq!(cli.input(), ":e assets");
+
+        cli.completion_next();
+        assert_eq!(cli.input(), ":e one.png");
+
+        cli.completion_next();
         assert_eq!(cli.input(), ":e three.png");
 
         cli.completion_next();
         assert_eq!(cli.input(), ":e two.png");
-
-        cli.completion_next();
-        assert_eq!(cli.input(), ":e one.png");
 
         cli.completion_next();
         assert_eq!(cli.input(), ":e assets");
@@ -1230,18 +1219,20 @@ mod test {
 
         cli.putc(' ');
         cli.completion_next();
-        assert_eq!(cli.input(), ":e assets/five.png three.png");
+        assert_eq!(cli.input(), ":e assets/five.png assets");
+        cli.completion_next();
+        assert_eq!(cli.input(), ":e assets/five.png one.png");
 
         cli.putc(' ');
         cli.putc('t');
         cli.completion_next();
-        assert_eq!(cli.input(), ":e assets/five.png three.png three.png");
+        assert_eq!(cli.input(), ":e assets/five.png one.png three.png");
 
         cli.completion_next();
-        assert_eq!(cli.input(), ":e assets/five.png three.png two.png");
+        assert_eq!(cli.input(), ":e assets/five.png one.png two.png");
 
         cli.completion_next();
-        assert_eq!(cli.input(), ":e assets/five.png three.png three.png");
+        assert_eq!(cli.input(), ":e assets/five.png one.png three.png");
 
         for _ in 0..10 {
             cli.cursor_backward();
@@ -1249,10 +1240,7 @@ mod test {
         cli.putc(' ');
         cli.putc('o');
         cli.completion_next();
-        assert_eq!(
-            cli.input(),
-            ":e assets/five.png three.png one.png three.png"
-        );
+        assert_eq!(cli.input(), ":e assets/five.png one.png one.png three.png");
 
         cli.clear();
         cli.puts(":e assets");
@@ -1306,13 +1294,13 @@ mod test {
         cli.puts(":cd assets/");
 
         cli.completion_next();
-        assert_eq!(cli.input(), ":cd assets/2");
-
-        cli.completion_next();
         assert_eq!(cli.input(), ":cd assets/1");
 
         cli.completion_next();
         assert_eq!(cli.input(), ":cd assets/2");
+
+        cli.completion_next();
+        assert_eq!(cli.input(), ":cd assets/1");
     }
 
     #[test]

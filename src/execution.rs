@@ -48,7 +48,7 @@ impl DigestState {
         let mut frames = Vec::new();
         let path = path.as_ref();
 
-        match File::open(&path) {
+        match File::open(path) {
             Ok(f) => {
                 let r = io::BufReader::new(f);
                 for line in r.lines() {
@@ -97,8 +97,10 @@ pub enum ExecutionMode {
 /// Execution mode. Controls whether the session is playing or recording
 /// commands.
 // TODO: Make this a `struct` and have `ExecutionMode`.
+#[derive(Default)]
 pub enum Execution {
     /// Normal execution. User inputs are processed normally.
+    #[default]
     Normal,
     /// Recording user inputs to log.
     Recording {
@@ -198,7 +200,7 @@ impl Execution {
             } => {
                 let mut frames = Vec::new();
 
-                match File::open(&path) {
+                match File::open(path) {
                     Ok(f) => {
                         let r = io::BufReader::new(f);
                         for line in r.lines() {
@@ -372,12 +374,6 @@ impl Execution {
     }
 }
 
-impl Default for Execution {
-    fn default() -> Self {
-        Execution::Normal
-    }
-}
-
 pub struct GifRecorder {
     width: u16,
     height: u16,
@@ -423,8 +419,6 @@ impl GifRecorder {
     }
 
     fn finish(&mut self) -> io::Result<()> {
-        use std::convert::TryInto;
-
         if let Some(encoder) = &mut self.encoder {
             for (i, (t1, gif_data)) in self.frames.iter().enumerate() {
                 let delay = if let Some((t2, _)) = self.frames.get(i + 1) {
